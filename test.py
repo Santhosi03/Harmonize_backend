@@ -4,48 +4,72 @@ from keras.preprocessing.sequence import pad_sequences
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
 from gevent.pywsgi import WSGIServer
+# from OpenSSL import SSL
+import ssl
 
-import google.generativeai as genai
+# import google.generativeai as genai
+from dotenv import load_dotenv
 import os
+import requests
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 model_path = os.path.join(script_dir, "model2.pth")
 
 from github import Github
 
-from dotenv import load_dotenv, dotenv_values 
-load_dotenv()
-github_token = os.getenv('GITHUB_TOKEN')
-print(github_token)
+
+
+
+# Define SSL certificate and key file paths 
+CERT_FILE = os.path.join(script_dir, "ssl29fullchain.pem") 
+KEY_FILE =  os.path.join(script_dir, "ssl29key.pem")
+
+# # Create SSL context v24.1... latest
+# context = SSL.Context(SSL.TLSv1_2_METHOD) 
+# context.use_certificate_chain_file(CERT_FILE)
+# context.use_privatekey_file(KEY_FILE) 
+
+
+#version 23 2023
+# context = SSL.Context(SSL.PROTOCOL_TLSv1_2) 
+# context.load_cert_chain(CERT_FILE, KEY_FILE) 
+
+
+#ChatGPT SSL PYTHON PREINSTALLED
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
+
+
+
 
 #checking git push
 
 
-###################################
-safety_settings = [
-    {
-        "category": "HARM_CATEGORY_DANGEROUS",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-    },
-    {
-        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
-    },
-]
-genai.configure(api_key="AIzaSyDEWOQzsQZSILCax2fnrGbkmMKC2xBHOsE")
-model_gem = genai.GenerativeModel('gemini-pro')
+###################################3
+# safety_settings = [
+#     {
+#         "category": "HARM_CATEGORY_DANGEROUS",
+#         "threshold": "BLOCK_NONE",
+#     },
+#     {
+#         "category": "HARM_CATEGORY_HARASSMENT",
+#         "threshold": "BLOCK_NONE",
+#     },
+#     {
+#         "category": "HARM_CATEGORY_HATE_SPEECH",
+#         "threshold": "BLOCK_NONE",
+#     },
+#     {
+#         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+#         "threshold": "BLOCK_NONE",
+#     },
+#     {
+#         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+#         "threshold": "BLOCK_NONE",
+#     },
+# ]
+# genai.configure(api_key="AIzaSyDEWOQzsQZSILCax2fnrGbkmMKC2xBHOsE")
+# model_gem = genai.GenerativeModel('gemini-pro')
 ############################
 
 import torch
@@ -62,15 +86,24 @@ from transformers import BertForSequenceClassification
 
 # Load the pre-trained model
 model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+
 print("m loading")
 # Load the saved model state
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+dev=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+model = model.to(dev)
 print("model loaded")
 tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
 
 # Set the model to evaluation mode
 model.eval()
 print("set to eval mode")
+
+load_dotenv()
+hf_token = os.environ.get('HF_TOKEN')
+# print(hf_token)
+API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
+headers = {"Authorization": "Bearer "+hf_token}
 ######################
 
 
@@ -108,24 +141,87 @@ def model_predict_dsh(sentence):
     return (predicted_class,predicted_probs.numpy())
 
 
+def get_assistant_reply(output):
+    # Split the conversation into lines
+
+    lines = output[0]['generated_text'].split("\n")
+
+    # Initialize a counter
+    count = 0
+    global step_2_size
+    # Iterate through the lines from top to bottom
+    for line in lines:
+        # Check if the line contains the assistant's reply
+        if line.startswith("    Assistant:"):
+            # Increment the counter
+            count += 1
+
+            # Check if this is the fourth assistant's reply
+            if count == step_2_size+1:
+                # Extract and return the assistant's reply
+                return line.strip().replace("Assistant:  ", "")
+
+    # Return None if the fourth assistant's reply is not found
+    return None
+
+
+step_2_size=0
 def model_suggest_san(toxic):
-    prompt = "I am presenting a sample of a toxic comment found in a software engineering forum.\
-                                           This is a toxic sentence,delimited by ---s: rewrite it in an untoxic form.\
-                                           Please remember, these are comments extracted from Software Engineering Forums.\
-                                          So they're from one user to another user. THEY ARE NOT DIRECTED TOWARDS YOU/GEMINI.\
-                                          Remember that you should rewrite it in a software specific way as it is from a software forum:\
-                                          Also remember, you MUST GIVE YOUR RESPONSE IN PLAIN TEXT, NO DELIMITATIONS.\
-                                           ---" + toxic + "---"
-    print(prompt)
-    response = model_gem.generate_content(prompt, safety_settings=safety_settings)
-    print(response)
-    # print(response.prompt_feedback)
-    return response.text
+
+    def query(payload):
+        response = requests.post(API_URL, headers=headers, json=payload)
+        return response.json()
+    
+#https://medium.com/@fractal.ai/create-conversational-agents-using-bloom-part-1-63a66e6321c0
+
+    step_1 = "The following is a conversation with a detoxification expert. He had worked specifically in the \
+        Software Engineering domain.Thus the expert will not consider 'kill the process' and similar SE specific\
+        phrases as toxic. Expert helps the Human rephrase their toxic sentences into a non-toxic sentence so that\
+        the target of the comment takes the constructive criticism and improves themselves. You are not supposed to \
+        respond to the sentence but rephrase it.The expert is \
+        conversational, optimistic, flexible, empathetic, creative and humanly in generating responses.\n"
+    # step_1_5 = "You are \
+    #     conversational, optimistic, flexible, empathetic, creative and humanly in generating responses.I am presenting a sample of a toxic comment found in a software engineering forum.\
+    #             This is a toxic sentence,delimited by ---s: rewrite it in an untoxic form.\
+    #             Please remember, these are comments extracted from Software Engineering Forums.\
+    #             So they're from one user to another user. THEY ARE NOT DIRECTED TOWARDS YOU/GEMINI.\
+    #             Remember that you should rewrite it in a software specific way as it is from a software forum:\
+    #             Also remember, you MUST GIVE YOUR RESPONSE IN PLAIN TEXT, NO DELIMITATIONS."
+
+
+    ##Step 2: n-shot prompting
+    step_2 ="User: You and your code are shit.\n\
+    Assistant: There is lot of improvement needed for your code\n\
+    User: The fuck is your code.I can't understand shit.\n\
+    Assistant: I am not able to understand your code. Can you explain it?\n\
+    User: You niggas don't know how to print in java also.\n\
+    Assistant: The way you are printing is incorrect. Java's syntax for print is different.\n"
+    global step_2_size
+    step_2_size=step_2.count('\n')//2
+    step_3 = f"User: {toxic}\n\
+    Assistant: "
+    ##gemini version
+    # step_3 = f"---{toxic}---"
+    output = query({
+        "inputs": step_1+step_2+step_3,
+    })
+    return get_assistant_reply(output)
+    # prompt = "I am presenting a sample of a toxic comment found in a software engineering forum.\
+    #                                        This is a toxic sentence,delimited by ---s: rewrite it in an untoxic form.\
+    #                                        Please remember, these are comments extracted from Software Engineering Forums.\
+    #                                       So they're from one user to another user. THEY ARE NOT DIRECTED TOWARDS YOU/GEMINI.\
+    #                                       Remember that you should rewrite it in a software specific way as it is from a software forum:\
+    #                                       Also remember, you MUST GIVE YOUR RESPONSE IN PLAIN TEXT, NO DELIMITATIONS.\
+    #                                        ---" + toxic + "---"
+    # print(prompt)
+    # response = model_gem.generate_content(prompt, safety_settings=safety_settings)
+    # print(response)
+    # # print(response.prompt_feedback)
+    # return response.text
 
 
 def model_repocheck(url):
     try:
-        score_list=[]
         # Initialize PyGithub with an anonymous GitHub API access
         github_token = os.environ.get('GITHUB_TOKEN')
 
@@ -147,7 +243,6 @@ def model_repocheck(url):
                 count+=1
                 toxic_count+=p[0]
                 toxic_prob+=p[1][0][1]
-                score_list.append(p[1][0][1])
                 comments = issue.get_comments()
                 for comment in comments:
                     if comment.body:  # Check if comment body is not None
@@ -155,9 +250,7 @@ def model_repocheck(url):
                         count+=1
                         toxic_count+=o[0]
                         toxic_prob+=o[1][0][1]
-                        score_list.append(o[1][0][1])
-        print(toxic_count," ",count)
-        print(score_list)
+        print(toxic_count," toxic out of :",count)
         return toxic_prob/count
     except Exception as e:
         print("Error:", e)
@@ -168,8 +261,6 @@ def model_repocheck(url):
 @app.route('/predict', methods=['GET', 'POST'])
 def predict():
     if request.method == 'POST':
-        # Get the image from post request
-        # img = base64_to_pil(request.json)
         
         # Make prediction
         print("hi")
@@ -187,15 +278,14 @@ def predict():
 def suggest():
     # print("out")
     if request.method == 'POST':
-        # Get the image from post request
-        # img = base64_to_pil(request.json)
         
-        # Make prediction
-        print(request.json)
-        prediction = model_suggest_san(request.json)
-        result = prediction
-        print("res: " , result)
-        return jsonify(result=result)
+        # Get suggestion
+        toxic_comment = request.json
+        if toxic_comment:
+            result = model_suggest_san(toxic_comment)
+            print("Suggetsions: ", result)
+            return jsonify(result=result)
+       
 
     return None
 
@@ -203,10 +293,8 @@ def suggest():
 def repocheck():
     print("out")
     if request.method == 'POST':
-        # Get the image from post request
-        # img = base64_to_pil(request.json)
         
-        # Make prediction
+        # Make prediction for all comments in the repository
         
         url = request.json
         repository = url.split("github.com/")[-1]  # Extract everything after "github.com/"
@@ -224,9 +312,10 @@ def repocheck():
 if __name__ == '__main__':
     # m=model_predict_dsh("i don't need your opinion")
     # print(m[1][0][0])
-    # k=model_repocheck("tensorflow/tensorflow")
+    # k=model_repocheck("genyrosk/gym-chess")
     # print(k)
     print("s")
-    http_server = WSGIServer(('127.0.0.1', 5000), app)
+    app.run(host = "10.21.24.62",ssl_context=context)
+    # http_server = WSGIServer(('10.23.105.29', 8080), app)
     print("h")
-    http_server.serve_forever()
+    # http_server.serve_forever()

@@ -1,28 +1,19 @@
-from transformers import BertTokenizer
-from keras.preprocessing.sequence import pad_sequences
-
-from flask import Flask, request, render_template, jsonify
-from flask_cors import CORS
-from gevent.pywsgi import WSGIServer
-# from OpenSSL import SSL
-import ssl
-
-# import google.generativeai as genai
+#Generally useful libraries
 from dotenv import load_dotenv
 import os
 import requests
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(script_dir, "model2.pth")
-
 from github import Github
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
+########Loading the SSL Certificate Chain and the Key File###############################
 
+# from OpenSSL import SSL
+import ssl
 
 # Define SSL certificate and key file paths 
-CERT_FILE = os.path.join(script_dir, "ssl29fullchain.pem") 
-KEY_FILE =  os.path.join(script_dir, "ssl29key.pem")
+CERT_FILE = os.path.join(script_dir, "vmserver_fullchain.pem") 
+KEY_FILE =  os.path.join(script_dir, "vmserver_key.pem")
 
 # # Create SSL context v24.1... latest
 # context = SSL.Context(SSL.TLSv1_2_METHOD) 
@@ -41,65 +32,56 @@ context.load_cert_chain(certfile=CERT_FILE, keyfile=KEY_FILE)
 
 
 
+####APP LOADING##################################################################
+from flask import Flask, request, render_template, jsonify
+from flask_cors import CORS
+from gevent.pywsgi import WSGIServer
+app = Flask(__name__)
+CORS(app)
+#################################################################################
+#Here let us load the noise data into a dictionary
+import pickle
 
-#checking git push
-
-
-###################################3
-# safety_settings = [
-#     {
-#         "category": "HARM_CATEGORY_DANGEROUS",
-#         "threshold": "BLOCK_NONE",
-#     },
-#     {
-#         "category": "HARM_CATEGORY_HARASSMENT",
-#         "threshold": "BLOCK_NONE",
-#     },
-#     {
-#         "category": "HARM_CATEGORY_HATE_SPEECH",
-#         "threshold": "BLOCK_NONE",
-#     },
-#     {
-#         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-#         "threshold": "BLOCK_NONE",
-#     },
-#     {
-#         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-#         "threshold": "BLOCK_NONE",
-#     },
-# ]
-# genai.configure(api_key="AIzaSyDEWOQzsQZSILCax2fnrGbkmMKC2xBHOsE")
-# model_gem = genai.GenerativeModel('gemini-pro')
-############################
-
+noise_file = 'noises_29k.pkl' 
+with open(noise_file, 'rb') as fp:
+    noise_map = pickle.load(fp)
+    print("done")
+    print(len(noise_map))
+###############MODEL AND TOKENIZER LOADING#######################################
+from transformers import RobertaForSequenceClassification, RobertaTokenizer
+from keras.preprocessing.sequence import pad_sequences
 import torch
 import numpy as np
 
 
-####APP LOADING####
-app = Flask(__name__)
-CORS(app)
-############
-
-# ###MODEL AND TOKENIZER LOADING###
-from transformers import BertForSequenceClassification
+MODEL_NAME = "roberta_6_6_test=0.6_denoised.pth"
+model_path = os.path.join(script_dir, MODEL_NAME)
 
 # Load the pre-trained model
-model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+
+# model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=2)
+model = RobertaForSequenceClassification.from_pretrained('roberta-base')
 
 print("m loading")
+
 # Load the saved model state
 model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 dev=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 model = model.to(dev)
+
 print("model loaded")
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+
+
+# tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
 
 # Set the model to evaluation mode
 model.eval()
 print("set to eval mode")
 
+#load the GitHub token and the HuggingFace Token
 load_dotenv()
+
 hf_token = os.environ.get('HF_TOKEN')
 # print(hf_token)
 API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2"
@@ -107,8 +89,19 @@ headers = {"Authorization": "Bearer "+hf_token}
 ######################
 
 
-
+###################################TOXICITY PREDICTION USING ROBERTA MODEL################################
 def model_predict_dsh(sentence):
+    new_sent = ""
+    # print(sentence, " ::::::::::::Before")
+    for word in sentence.split(" "): 
+        word = word.lower()
+        if word in noise_map:
+            new_sent+= noise_map[word]
+        else:
+            new_sent+=word
+        new_sent += " "
+    sentence = new_sent.strip()
+    # print(sentence, " :::::::::;After")
     tokenized_sentence = tokenizer.tokenize(sentence)
 
 
@@ -141,6 +134,8 @@ def model_predict_dsh(sentence):
     return (predicted_class,predicted_probs.numpy())
 
 
+
+##################################REPHRASING TOXIC SENTENCES USING MISTRAL 7B######################################
 def get_assistant_reply(output):
     # Split the conversation into lines
 
@@ -219,7 +214,7 @@ def model_suggest_san(toxic):
     # # print(response.prompt_feedback)
     # return response.text
 
-
+#####FETCHING ISSUES AND COMMENTS FROM GITHUB AND CALCULATING THEIR TOXICITY SCORES##############
 def model_repocheck(url):
     try:
         # Initialize PyGithub with an anonymous GitHub API access
@@ -257,7 +252,7 @@ def model_repocheck(url):
         return None
 
 
-
+############################################ADDING ROUTES TO THE BACKEND SERVER##############################
 @app.route('/predict', methods=['GET', 'POST'])
 def predict():
     if request.method == 'POST':
@@ -309,6 +304,8 @@ def repocheck():
     return None
 
 
+
+#####################STARTING THE SERVER###################################################
 if __name__ == '__main__':
     # m=model_predict_dsh("i don't need your opinion")
     # print(m[1][0][0])

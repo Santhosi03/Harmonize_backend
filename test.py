@@ -241,14 +241,14 @@ def model_repocheck(url):
             dict_count[contributor.login]=0
         
         # Iterate through issues and extract comments
-        print(contributors , "contributors")
+        # print(contributors , "contributors")
         for issue in issues:
             if issue.body:  # Check if issue body is not None
                 p = model_predict_dsh(issue.body)
                 count+=1
                 toxic_count+=p[0]
                 toxic_prob+=p[1][0][1]
-                print(issue.user.login , "username")
+                # print(issue.user.login , "username")
                 if issue.user in contributors:
                     dict[issue.user.login]+=p[1][0][1]
                     dict_count[issue.user.login]+=1
@@ -267,9 +267,9 @@ def model_repocheck(url):
         for contributor in contributors:
             if dict_count[contributor.login]!=0:
                 dict[contributor.login]/=dict_count[contributor.login]
-        print(toxic_count," ",count)
-        print(score_list)
-        print(dict)
+        # print(toxic_count," ",count)
+        # print(score_list)
+        # print(dict)
         if count!=0:
             toxic_prob/=count
         return (toxic_prob, dict)

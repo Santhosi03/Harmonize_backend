@@ -214,9 +214,12 @@ def model_suggest_san(toxic):
     # # print(response.prompt_feedback)
     # return response.text
 
-#####FETCHING ISSUES AND COMMENTS FROM GITHUB AND CALCULATING THEIR TOXICITY SCORES##############
+#####FETCHING ISSUES AND COMMENTS FROM GITHUB AND CALCULATING THE TOXICITY SCORE of the repo and contributors##############
+score_list=[]
 def model_repocheck(url):
     try:
+        dict={}
+        dict_count={}
         # Initialize PyGithub with an anonymous GitHub API access
         github_token = os.environ.get('GITHUB_TOKEN')
 
@@ -231,13 +234,25 @@ def model_repocheck(url):
         # Get all issues from the repository
         issues = repo.get_issues(state='all')
 
+        contributors = repo.get_contributors()
+        
+        for contributor in contributors:
+            dict[contributor.login]=0
+            dict_count[contributor.login]=0
+        
         # Iterate through issues and extract comments
+        print(contributors , "contributors")
         for issue in issues:
             if issue.body:  # Check if issue body is not None
                 p = model_predict_dsh(issue.body)
                 count+=1
                 toxic_count+=p[0]
                 toxic_prob+=p[1][0][1]
+                print(issue.user.login , "username")
+                if issue.user in contributors:
+                    dict[issue.user.login]+=p[1][0][1]
+                    dict_count[issue.user.login]+=1
+                score_list.append(p[1][0][1])
                 comments = issue.get_comments()
                 for comment in comments:
                     if comment.body:  # Check if comment body is not None
@@ -245,8 +260,19 @@ def model_repocheck(url):
                         count+=1
                         toxic_count+=o[0]
                         toxic_prob+=o[1][0][1]
-        print(toxic_count," toxic out of :",count)
-        return toxic_prob/count
+                        if comment.user in contributors:
+                            dict[comment.user.login]+=o[1][0][1]
+                            dict_count[comment.user.login]+=1
+                        score_list.append(o[1][0][1])
+        for contributor in contributors:
+            if dict_count[contributor.login]!=0:
+                dict[contributor.login]/=dict_count[contributor.login]
+        print(toxic_count," ",count)
+        print(score_list)
+        print(dict)
+        if count!=0:
+            toxic_prob/=count
+        return (toxic_prob, dict)
     except Exception as e:
         print("Error:", e)
         return None
@@ -288,18 +314,22 @@ def suggest():
 def repocheck():
     print("out")
     if request.method == 'POST':
+        # Get the image from post request
+        # img = base64_to_pil(request.json)
         
-        # Make prediction for all comments in the repository
+        # Make prediction
         
         url = request.json
         repository = url.split("github.com/")[-1]  # Extract everything after "github.com/"
         print(repository)
-        
+
         print(request.json)
         prediction = model_repocheck(repository)
-        result = prediction
+        result = prediction[0]
+        dictio = prediction[1]
         print("res: " , result)
-        return jsonify(result=result)
+        print("dict: " , dictio)
+        return jsonify(result=result , dict=dictio)
 
     return None
 

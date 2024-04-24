@@ -231,6 +231,9 @@ def model_repocheck(url):
         count=0
         toxic_count=0
         toxic_prob=0
+        toxic_prob_array = []
+        # Initialize the dictionary to store the counts for each range
+        score_ranges = {f'{i}-{i+10}': 0 for i in range(0, 100, 10)}
         # Get all issues from the repository
         issues = repo.get_issues(state='all')
 
@@ -248,6 +251,8 @@ def model_repocheck(url):
                 count+=1
                 toxic_count+=p[0]
                 toxic_prob+=p[1][0][1]
+                toxic_prob_array.append(p[1][0][1])
+
                 # print(issue.user.login , "username")
                 if issue.user in contributors:
                     dict[issue.user.login]+=p[1][0][1]
@@ -264,6 +269,13 @@ def model_repocheck(url):
                             dict[comment.user.login]+=o[1][0][1]
                             dict_count[comment.user.login]+=1
                         score_list.append(o[1][0][1])
+        # Count the scores falling into each range
+        for score in toxic_prob_array:
+            for key in score_ranges:
+                start, end = map(int, key.split('-'))
+                if start <= score * 100 < end:
+                    score_ranges[key] += 1
+                    break
         for contributor in contributors:
             if dict_count[contributor.login]!=0:
                 dict[contributor.login]/=dict_count[contributor.login]
@@ -272,11 +284,10 @@ def model_repocheck(url):
         # print(dict)
         if count!=0:
             toxic_prob/=count
-        return (toxic_prob, dict)
+        return (toxic_prob, dict,score_ranges)
     except Exception as e:
         print("Error:", e)
         return None
-
 
 ############################################ADDING ROUTES TO THE BACKEND SERVER##############################
 @app.route('/predict', methods=['GET', 'POST'])
@@ -327,9 +338,10 @@ def repocheck():
         prediction = model_repocheck(repository)
         result = prediction[0]
         dictio = prediction[1]
+        score_ranges = prediction[2]
         print("res: " , result)
         print("dict: " , dictio)
-        return jsonify(result=result , dict=dictio)
+        return jsonify(result=result , dict=dictio, score_ranges=score_ranges)
 
     return None
 
@@ -342,7 +354,7 @@ if __name__ == '__main__':
     # k=model_repocheck("genyrosk/gym-chess")
     # print(k)
     print("s")
-    app.run(host = "10.21.24.62",ssl_context=context)
+    app.run(host = "10.21.24.62",port=8029,ssl_context=context)
     # http_server = WSGIServer(('10.23.105.29', 8080), app)
     print("h")
     # http_server.serve_forever()
